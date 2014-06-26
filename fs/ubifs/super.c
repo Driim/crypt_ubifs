@@ -1067,17 +1067,16 @@ static int ubifs_parse_options(struct ubifs_info *c, char *options,
 			if(c->mount_opts.compr_type == UBIFS_COMPR_AES && len == UBIFS_AES_KEY_SIZE) {
 				if(ubifs_set_crypto_key(cr_key, len)) {
 					ubifs_err("Cannot set crypto key");
-					return 1; /* TODO: error code */
+					return 1;
 				}
 			}
 			else {
 				ubifs_msg("Cannot use AES compressor, key length %d, must be %d", len, UBIFS_AES_KEY_SIZE);
 				return 1;
-				/* TODO: error cannot mount fs*/
 			}
 
 			memset(cr_key, 0, len);
-			kfree(cr_key); /*TODO: check this */
+			kfree(cr_key);
 			break;
 		}
 		default:

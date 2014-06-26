@@ -26,11 +26,11 @@
  * This file provides a single place to access to compression and
  * decompression.
  */
+#include "ubifs.h"
 
 #include <linux/crypto.h>
 #include <linux/err.h>
 #include <linux/scatterlist.h>
-#include "ubifs.h"
 
 #define AES_BLOCK_SIZE 16
 
@@ -125,21 +125,26 @@ static int ubifs_crypt(const void *in_buf, int in_len, void *out_buf, int *out_l
 	int ret;
 	struct ubifs_compressor *compr = ubifs_compressors[UBIFS_COMPR_AES];
 
-	/* TODO: in case of all error leave data in plain text */
-	/* TODO: Check that data has rigth sizeafter decrypting */
+	/* In case of all error leave data in plain text */
+	if(!compr->key_flag) {
+		ubifs_err("Crypto key is not set");
+		goto err_out;
+	}
+
+	/* TODO: Check that data has rigth size after decrypting */
 
 	/* align data */
 	len_align = ALIGN(in_len, AES_BLOCK_SIZE);
 	if(len_align != in_len) {
-		ubifs_msg("Data size unaligned = %d, aligned = %d", in_len, len_align);
 		if(!op) {
 			ubifs_err("Unaligned decryption cannot be done");
 			goto err_out;
 		}
 
 		buf_align = kmalloc(len_align, GFP_NOFS);
-		if (!buf_align)
-			return -ENOMEM; /*FIXME: must not ignore ret_val*/
+		if (!buf_align) {
+			goto err_out;
+		}
 
 		/* Clean buffer not necessarily, just copy data */
 		memcpy(buf_align, in_buf, in_len);
@@ -150,15 +155,10 @@ static int ubifs_crypt(const void *in_buf, int in_len, void *out_buf, int *out_l
 
 	*out_len = len_align;
 
-	if(!compr->key_flag) {
-		ubifs_err("Crypto key is not set");
-		goto err_out;
-	}
-
 	sg_init_one(&in_sg,buf_align,len_align);
 	sg_init_one(&out_sg,out_buf,len_align);
 
-	initializeTweakBytes(tweakBytes, tweak); /* Inspired by WhisperYAFS */
+	initializeTweakBytes(tweakBytes, tweak);
 
 	compr->cd->info = tweakBytes;
 
@@ -168,14 +168,16 @@ static int ubifs_crypt(const void *in_buf, int in_len, void *out_buf, int *out_l
 		ret = crypto_blkcipher_decrypt_iv(compr->cd, &out_sg, &in_sg, len_align);
 
 	if(ret) {
-		ubifs_err("Failed to en/decrypt data"); /* Need more info */
+		/* TODO: Need more info */
+		ubifs_err("Failed to en/decrypt data");
 		goto err_out;
 	}
 
+	/* Aligned tmp buffer clean up*/
 	if(buf_align != in_buf)
-		kfree(buf_align); /* Don't forget to clean up */
+		kfree(buf_align);
 
-	return ret;
+	return 0;
 
 err_out:
 	memcpy(out_buf, in_buf, in_len);

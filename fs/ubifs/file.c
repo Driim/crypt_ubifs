@@ -663,7 +663,8 @@ static int populate_page(struct ubifs_info *c, struct page *page,
 			 * aligning, so we need to check it. If out_len > len and
 			 * used 'compressor' AES just chomp data to original size.
 			 */
-			if (err || (len != out_len && le16_to_cpu(dn->compr_type) != UBIFS_COMPR_AES))
+			if (err || (len != out_len &&
+					le16_to_cpu(dn->compr_type) != UBIFS_COMPR_AES))
 				goto out_err;
 
 			if (len < UBIFS_BLOCK_SIZE)
