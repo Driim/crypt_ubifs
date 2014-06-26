@@ -81,8 +81,13 @@ static int read_block(struct inode *inode, void *addr, unsigned int block,
 	dlen = le32_to_cpu(dn->ch.len) - UBIFS_DATA_NODE_SZ;
 	out_len = UBIFS_BLOCK_SIZE;
 	err = ubifs_decompress(&dn->data, dlen, addr, &out_len,
-			       le16_to_cpu(dn->compr_type));
-	if (err || len != out_len)
+			       le16_to_cpu(dn->compr_type), *(key.u64));
+	/*
+	 * If we using AES cipher out_len can be bigger because of
+	 * aligning, so we need to check it. If out_len > len and
+	 * used 'compressor' AES just chomp data to original size.
+	 */
+	if (err || (len != out_len && le16_to_cpu(dn->compr_type) != UBIFS_COMPR_AES))
 		goto dump;
 
 	/*
@@ -637,6 +642,7 @@ static int populate_page(struct ubifs_info *c, struct page *page,
 			memset(addr, 0, UBIFS_BLOCK_SIZE);
 		} else if (key_block(c, &bu->zbranch[nn].key) == page_block) {
 			struct ubifs_data_node *dn;
+			union ubifs_key key;
 
 			dn = bu->buf + (bu->zbranch[nn].offs - offs);
 
@@ -647,11 +653,17 @@ static int populate_page(struct ubifs_info *c, struct page *page,
 			if (len <= 0 || len > UBIFS_BLOCK_SIZE)
 				goto out_err;
 
+			key_read(NULL, &dn->key, &key);
 			dlen = le32_to_cpu(dn->ch.len) - UBIFS_DATA_NODE_SZ;
 			out_len = UBIFS_BLOCK_SIZE;
 			err = ubifs_decompress(&dn->data, dlen, addr, &out_len,
-					       le16_to_cpu(dn->compr_type));
-			if (err || len != out_len)
+					       le16_to_cpu(dn->compr_type), *(key.u64));
+			/*
+			 * If we using AES cipher out_len can be bigger because of
+			 * aligning, so we need to check it. If out_len > len and
+			 * used 'compressor' AES just chomp data to original size.
+			 */
+			if (err || (len != out_len && le16_to_cpu(dn->compr_type) != UBIFS_COMPR_AES))
 				goto out_err;
 
 			if (len < UBIFS_BLOCK_SIZE)

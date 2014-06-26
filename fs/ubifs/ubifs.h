@@ -40,6 +40,8 @@
 
 /* Version of this UBIFS implementation */
 #define UBIFS_VERSION 1
+/* Cryptography key size */
+#define UBIFS_AES_KEY_SIZE 32
 
 /* Normal UBIFS messages */
 #define ubifs_msg(fmt, ...) pr_notice("UBIFS: " fmt "\n", ##__VA_ARGS__)
@@ -400,7 +402,7 @@ struct ubifs_inode {
 	unsigned int dirty:1;
 	unsigned int xattr:1;
 	unsigned int bulk_read:1;
-	unsigned int compr_type:2;
+	unsigned int compr_type:3;
 	struct mutex ui_mutex;
 	spinlock_t ui_lock;
 	loff_t synced_i_size;
@@ -819,6 +821,7 @@ struct ubifs_node_range {
  * struct ubifs_compressor - UBIFS compressor description structure.
  * @compr_type: compressor type (%UBIFS_COMPR_LZO, etc)
  * @cc: cryptoapi compressor handle
+ * @cd: cryptoapi deskriptor handle for encryption
  * @comp_mutex: mutex used during compression
  * @decomp_mutex: mutex used during decompression
  * @name: compressor name
@@ -826,7 +829,11 @@ struct ubifs_node_range {
  */
 struct ubifs_compressor {
 	int compr_type;
-	struct crypto_comp *cc;
+	int key_flag;
+	union {
+		struct crypto_comp *cc;
+		struct blkcipher_desc *cd;
+	};
 	struct mutex *comp_mutex;
 	struct mutex *decomp_mutex;
 	const char *name;
@@ -936,7 +943,7 @@ struct ubifs_mount_opts {
 	unsigned int bulk_read:2;
 	unsigned int chk_data_crc:2;
 	unsigned int override_compr:1;
-	unsigned int compr_type:2;
+	unsigned int compr_type:3;
 };
 
 /**
@@ -1261,7 +1268,7 @@ struct ubifs_info {
 	unsigned int space_fixup:1;
 	unsigned int no_chk_data_crc:1;
 	unsigned int bulk_read:1;
-	unsigned int default_compr:2;
+	unsigned int default_compr:3;
 	unsigned int rw_incompat:1;
 
 	struct mutex tnc_mutex;
@@ -1777,9 +1784,10 @@ long ubifs_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 int __init ubifs_compressors_init(void);
 void ubifs_compressors_exit(void);
 void ubifs_compress(const void *in_buf, int in_len, void *out_buf, int *out_len,
-		    int *compr_type);
+		    int *compr_type, uint64_t tweak);
 int ubifs_decompress(const void *buf, int len, void *out, int *out_len,
-		     int compr_type);
+		     int compr_type, uint64_t tweak);
+int ubifs_set_crypto_key(u8 * key_buf, int len);
 
 #include "debug.h"
 #include "misc.h"

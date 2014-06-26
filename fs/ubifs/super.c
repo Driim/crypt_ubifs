@@ -944,6 +944,7 @@ enum {
 	Opt_chk_data_crc,
 	Opt_no_chk_data_crc,
 	Opt_override_compr,
+	Opt_crypto_key,
 	Opt_err,
 };
 
@@ -955,6 +956,7 @@ static const match_table_t tokens = {
 	{Opt_chk_data_crc, "chk_data_crc"},
 	{Opt_no_chk_data_crc, "no_chk_data_crc"},
 	{Opt_override_compr, "compr=%s"},
+	{Opt_crypto_key, "key=%s"},
 	{Opt_err, NULL},
 };
 
@@ -1044,6 +1046,9 @@ static int ubifs_parse_options(struct ubifs_info *c, char *options,
 				c->mount_opts.compr_type = UBIFS_COMPR_LZO;
 			else if (!strcmp(name, "zlib"))
 				c->mount_opts.compr_type = UBIFS_COMPR_ZLIB;
+			else if (!strcmp(name, "aes")) {
+				c->mount_opts.compr_type = UBIFS_COMPR_AES;
+			}
 			else {
 				ubifs_err("unknown compressor \"%s\"", name);
 				kfree(name);
@@ -1052,6 +1057,27 @@ static int ubifs_parse_options(struct ubifs_info *c, char *options,
 			kfree(name);
 			c->mount_opts.override_compr = 1;
 			c->default_compr = c->mount_opts.compr_type;
+			break;
+		}
+		case Opt_crypto_key:
+		{
+			char *cr_key = match_strdup(&args[0]);
+			int len = strlen(cr_key);
+
+			if(c->mount_opts.compr_type == UBIFS_COMPR_AES && len == UBIFS_AES_KEY_SIZE) {
+				if(ubifs_set_crypto_key(cr_key, len)) {
+					ubifs_err("Cannot set crypto key");
+					return 1; /* TODO: error code */
+				}
+			}
+			else {
+				ubifs_msg("Cannot use AES compressor, key length %d, must be %d", len, UBIFS_AES_KEY_SIZE);
+				return 1;
+				/* TODO: error cannot mount fs*/
+			}
+
+			memset(cr_key, 0, len);
+			kfree(cr_key); /*TODO: check this */
 			break;
 		}
 		default:
@@ -2234,12 +2260,12 @@ static int __init ubifs_init(void)
 	BUILD_BUG_ON(UBIFS_REF_NODE_SZ != 64);
 
 	/*
-	 * We use 2 bit wide bit-fields to store compression type, which should
+	 * We use 3 bit wide bit-fields to store compression type, which should
 	 * be amended if more compressors are added. The bit-fields are:
 	 * @compr_type in 'struct ubifs_inode', @default_compr in
 	 * 'struct ubifs_info' and @compr_type in 'struct ubifs_mount_opts'.
 	 */
-	BUILD_BUG_ON(UBIFS_COMPR_TYPES_CNT > 4);
+	BUILD_BUG_ON(UBIFS_COMPR_TYPES_CNT > 5);
 
 	/*
 	 * We require that PAGE_CACHE_SIZE is greater-than-or-equal-to

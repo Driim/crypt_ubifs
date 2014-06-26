@@ -727,7 +727,7 @@ int ubifs_jnl_write_data(struct ubifs_info *c, const struct inode *inode,
 		compr_type = ui->compr_type;
 
 	out_len = dlen - UBIFS_DATA_NODE_SZ;
-	ubifs_compress(buf, len, &data->data, &out_len, &compr_type);
+	ubifs_compress(buf, len, &data->data, &out_len, &compr_type, *(key->u64));
 	ubifs_assert(out_len <= UBIFS_BLOCK_SIZE);
 
 	dlen = UBIFS_DATA_NODE_SZ + out_len;
@@ -1100,19 +1100,22 @@ static int recomp_data_node(struct ubifs_data_node *dn, int *new_len)
 {
 	void *buf;
 	int err, len, compr_type, out_len;
+	union ubifs_key key;
 
 	out_len = le32_to_cpu(dn->size);
 	buf = kmalloc(out_len * WORST_COMPR_FACTOR, GFP_NOFS);
 	if (!buf)
 		return -ENOMEM;
 
+	key_read(NULL, &dn->key, &key);
+
 	len = le32_to_cpu(dn->ch.len) - UBIFS_DATA_NODE_SZ;
 	compr_type = le16_to_cpu(dn->compr_type);
-	err = ubifs_decompress(&dn->data, len, buf, &out_len, compr_type);
+	err = ubifs_decompress(&dn->data, len, buf, &out_len, compr_type, *(key.u64));
 	if (err)
 		goto out;
 
-	ubifs_compress(buf, *new_len, &dn->data, &out_len, &compr_type);
+	ubifs_compress(buf, *new_len, &dn->data, &out_len, &compr_type, *(key.u64));
 	ubifs_assert(out_len <= UBIFS_BLOCK_SIZE);
 	dn->compr_type = cpu_to_le16(compr_type);
 	dn->size = cpu_to_le32(*new_len);

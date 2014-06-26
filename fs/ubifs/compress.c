@@ -28,7 +28,11 @@
  */
 
 #include <linux/crypto.h>
+#include <linux/err.h>
+#include <linux/scatterlist.h>
 #include "ubifs.h"
+
+#define AES_BLOCK_SIZE 16
 
 /* Fake description object for the "none" compressor */
 static struct ubifs_compressor none_compr = {
@@ -71,8 +75,144 @@ static struct ubifs_compressor zlib_compr = {
 };
 #endif
 
+#ifdef CONFIG_UBIFS_FS_AES
+static struct blkcipher_desc crypto_desc;
+
+static struct ubifs_compressor aes_compr = {
+	.compr_type = UBIFS_COMPR_AES,
+	.key_flag = 0,
+	.name = "aes",
+	.capi_name = "xts(aes)",
+	.cd = &crypto_desc,
+};
+#else
+static struct ubifs_compressor aes_compr = {
+	.compr_type = UBIFS_COMPR_AES,
+	.key_flag = 0,
+	.name = "aes",
+};
+#endif
+
+
 /* All UBIFS compressors */
 struct ubifs_compressor *ubifs_compressors[UBIFS_COMPR_TYPES_CNT];
+
+static void initializeTweakBytes(uint8_t *tweakBytes, uint64_t tweak) {
+	int j;
+
+	for (j=0;j<AES_BLOCK_SIZE;j++) {
+		tweakBytes[j] = (uint8_t) (tweak & 0xFF);
+		tweak         = tweak >> 8;
+	}
+}
+
+/**
+ * ubifs_crypt - en/decrypt data
+ * @in_buf: data to compress
+ * @in_len: length of the data to compress
+ * @out_buf: output buffer where compressed data should be stored
+ * @out_len: output buffer length is returned here
+ * @tweak: tweak for aes-xts en/decryption
+ * @op: operation encrypt - 1, decrypt - 0
+ **/
+static int ubifs_crypt(const void *in_buf, int in_len, void *out_buf, int *out_len, uint64_t tweak, int op)
+{
+	struct scatterlist in_sg;
+	struct scatterlist out_sg;
+	uint8_t tweakBytes[AES_BLOCK_SIZE];
+	void *buf_align;
+	int len_align;
+	int ret;
+	struct ubifs_compressor *compr = ubifs_compressors[UBIFS_COMPR_AES];
+
+	/* TODO: in case of all error leave data in plain text */
+	/* TODO: Check that data has rigth sizeafter decrypting */
+
+	/* align data */
+	len_align = ALIGN(in_len, AES_BLOCK_SIZE);
+	if(len_align != in_len) {
+		ubifs_msg("Data size unaligned = %d, aligned = %d", in_len, len_align);
+		if(!op) {
+			ubifs_err("Unaligned decryption cannot be done");
+			goto err_out;
+		}
+
+		buf_align = kmalloc(len_align, GFP_NOFS);
+		if (!buf_align)
+			return -ENOMEM; /*FIXME: must not ignore ret_val*/
+
+		/* Clean buffer not necessarily, just copy data */
+		memcpy(buf_align, in_buf, in_len);
+	}
+	else {
+		buf_align = (void *)in_buf;
+	}
+
+	*out_len = len_align;
+
+	if(!compr->key_flag) {
+		ubifs_err("Crypto key is not set");
+		goto err_out;
+	}
+
+	sg_init_one(&in_sg,buf_align,len_align);
+	sg_init_one(&out_sg,out_buf,len_align);
+
+	initializeTweakBytes(tweakBytes, tweak); /* Inspired by WhisperYAFS */
+
+	compr->cd->info = tweakBytes;
+
+	if (op)
+		ret = crypto_blkcipher_encrypt_iv(compr->cd, &out_sg, &in_sg, len_align);
+	else
+		ret = crypto_blkcipher_decrypt_iv(compr->cd, &out_sg, &in_sg, len_align);
+
+	if(ret) {
+		ubifs_err("Failed to en/decrypt data"); /* Need more info */
+		goto err_out;
+	}
+
+	if(buf_align != in_buf)
+		kfree(buf_align); /* Don't forget to clean up */
+
+	return ret;
+
+err_out:
+	memcpy(out_buf, in_buf, in_len);
+	*out_len = in_len;
+	return 1;
+}
+
+/**
+ * ubifs_set_crypto_key - Set en/decryption key
+ * @key_buf: key
+ * @len: length of key
+ *
+ * Function set cryptography key.
+ **/
+int ubifs_set_crypto_key(uint8_t * key_buf, int len)
+{
+	struct ubifs_compressor *compr = ubifs_compressors[UBIFS_COMPR_AES];
+
+	if(compr->key_flag) {
+		ubifs_msg("Resetting crypto key");
+	}
+
+	if (compr->capi_name) {
+		if(crypto_blkcipher_setkey(compr->cd->tfm, key_buf, len)) {
+			ubifs_err("cannot set %s key flags=%x",
+				compr->name, crypto_blkcipher_get_flags(compr->cd->tfm));
+			return 1;
+		}
+	}
+	else {
+		ubifs_err("%s cipher is not compiled in", compr->name);
+		return 1;
+	}
+
+	compr->key_flag = 1;
+	return 0;
+}
 
 /**
  * ubifs_compress - compress data.
@@ -93,13 +233,19 @@ struct ubifs_compressor *ubifs_compressors[UBIFS_COMPR_TYPES_CNT];
  * buffer and %UBIFS_COMPR_NONE is returned in @compr_type.
  */
 void ubifs_compress(const void *in_buf, int in_len, void *out_buf, int *out_len,
-		    int *compr_type)
+		    int *compr_type, uint64_t tweak)
 {
 	int err;
 	struct ubifs_compressor *compr = ubifs_compressors[*compr_type];
 
 	if (*compr_type == UBIFS_COMPR_NONE)
 		goto no_compr;
+
+	if(*compr_type == UBIFS_COMPR_AES) {
+		ubifs_crypt(in_buf, in_len, out_buf, out_len, tweak, 1);
+		*compr_type = UBIFS_COMPR_AES;
+		return;
+	}
 
 	/* If the input data is small, do not even try to compress it */
 	if (in_len < UBIFS_MIN_COMPR_LEN)
@@ -145,7 +291,7 @@ no_compr:
  * returns %0 on success or a negative error code on failure.
  */
 int ubifs_decompress(const void *in_buf, int in_len, void *out_buf,
-		     int *out_len, int compr_type)
+		     int *out_len, int compr_type, uint64_t tweak)
 {
 	int err;
 	struct ubifs_compressor *compr;
@@ -166,6 +312,11 @@ int ubifs_decompress(const void *in_buf, int in_len, void *out_buf,
 		memcpy(out_buf, in_buf, in_len);
 		*out_len = in_len;
 		return 0;
+	}
+
+	if(compr_type == UBIFS_COMPR_AES) {
+		err = ubifs_crypt(in_buf, in_len, out_buf, out_len, tweak, 0);
+		return err;
 	}
 
 	if (compr->decomp_mutex)
@@ -215,6 +366,36 @@ static void compr_exit(struct ubifs_compressor *compr)
 }
 
 /**
+ * crypt_init - initialize UBIFS crypto engine
+ **/
+static int __init crypt_init(struct ubifs_compressor *compr)
+{
+	if (compr->capi_name) {
+		compr->cd->tfm = crypto_alloc_blkcipher(compr->capi_name, 0, 0);
+		if (IS_ERR(compr->cd->tfm)) {
+			ubifs_err("cannot initialize compressor %s, error %ld",
+				compr->name, PTR_ERR(compr->cc));
+			return PTR_ERR(compr->cc);
+		}
+
+		compr->cd->flags = 0;
+	}
+
+	ubifs_compressors[compr->compr_type] = compr;
+	return 0;
+}
+
+/**
+ * crypt_exit - de-initialize UBIFS crypto engine
+ **/
+static void crypt_exit(struct ubifs_compressor *compr)
+{
+	if (compr->capi_name)
+		crypto_free_blkcipher(compr->cd->tfm);
+	return;
+}
+
+/**
  * ubifs_compressors_init - initialize UBIFS compressors.
  *
  * This function initializes the compressor which were compiled in. Returns
@@ -232,9 +413,15 @@ int __init ubifs_compressors_init(void)
 	if (err)
 		goto out_lzo;
 
+	err = crypt_init(&aes_compr);
+	if(err)
+		goto out_zlib;
+
 	ubifs_compressors[UBIFS_COMPR_NONE] = &none_compr;
 	return 0;
 
+out_zlib:
+	compr_exit(&zlib_compr);
 out_lzo:
 	compr_exit(&lzo_compr);
 	return err;
@@ -247,4 +434,5 @@ void ubifs_compressors_exit(void)
 {
 	compr_exit(&lzo_compr);
 	compr_exit(&zlib_compr);
+	crypt_exit(&aes_compr);
 }
