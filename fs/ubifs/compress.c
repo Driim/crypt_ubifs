@@ -143,6 +143,7 @@ static int ubifs_crypt(const void *in_buf, int in_len, void *out_buf, int *out_l
 
 		buf_align = kmalloc(len_align, GFP_NOFS);
 		if (!buf_align) {
+			ubifs_err("No memory for cryptobuffer!");
 			goto err_out;
 		}
 
@@ -180,8 +181,9 @@ static int ubifs_crypt(const void *in_buf, int in_len, void *out_buf, int *out_l
 	return 0;
 
 err_out:
-	memcpy(out_buf, in_buf, in_len);
-	*out_len = in_len;
+	/* Aligned tmp buffer clean up*/
+	if(buf_align != in_buf)
+		kfree(buf_align);
 	return 1;
 }
 
@@ -244,7 +246,9 @@ void ubifs_compress(const void *in_buf, int in_len, void *out_buf, int *out_len,
 		goto no_compr;
 
 	if(*compr_type == UBIFS_COMPR_AES) {
-		ubifs_crypt(in_buf, in_len, out_buf, out_len, tweak, 1);
+		/* In case of errors data saved in plain */
+		if(ubifs_crypt(in_buf, in_len, out_buf, out_len, tweak, 1))
+			goto no_compr;
 		*compr_type = UBIFS_COMPR_AES;
 		return;
 	}
@@ -318,7 +322,8 @@ int ubifs_decompress(const void *in_buf, int in_len, void *out_buf,
 
 	if(compr_type == UBIFS_COMPR_AES) {
 		err = ubifs_crypt(in_buf, in_len, out_buf, out_len, tweak, 0);
-		return err;
+		if(err)
+			return -EINVAL; /* TODO: ERROR CODE */
 	}
 
 	if (compr->decomp_mutex)
@@ -377,7 +382,7 @@ static int __init crypt_init(struct ubifs_compressor *compr)
 		if (IS_ERR(compr->cd->tfm)) {
 			ubifs_err("cannot initialize compressor %s, error %ld",
 				compr->name, PTR_ERR(compr->cc));
-			return PTR_ERR(compr->cc);
+			return PTR_ERR(compr->cd->tfm);
 		}
 
 		compr->cd->flags = 0;
