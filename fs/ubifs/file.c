@@ -50,6 +50,7 @@
  */
 
 #include "ubifs.h"
+#include "crypto.h"
 #include <linux/aio.h>
 #include <linux/mount.h>
 #include <linux/namei.h>
@@ -62,6 +63,8 @@ static int read_block(struct inode *inode, void *addr, unsigned int block,
 	int err, len, out_len;
 	union ubifs_key key;
 	unsigned int dlen;
+	void *dec_buf;
+	int dec_len;
 
 	data_key_init(c, &key, inode->i_ino, block);
 	err = ubifs_tnc_lookup(c, &key, dn);
@@ -80,10 +83,42 @@ static int read_block(struct inode *inode, void *addr, unsigned int block,
 
 	dlen = le32_to_cpu(dn->ch.len) - UBIFS_DATA_NODE_SZ;
 	out_len = UBIFS_BLOCK_SIZE;
-	err = ubifs_decompress(&dn->data, dlen, addr, &out_len,
+
+	dec_buf = kmalloc(out_len, GFP_NOFS | __GFP_NOWARN);
+	if(!dec_buf) {
+		return -ENOMEM;
+	}
+	dec_len = out_len;
+
+	err = ubifs_decompress(&dn->data, dlen, dec_buf, &dec_len,
 			       le16_to_cpu(dn->compr_type));
-	if (err || len != out_len)
+	if (err)
 		goto dump;
+
+	if(ubifs_is_crypted(inode)) { /*TODO: add unlikely*/
+		void * tmp_buf;
+		tmp_buf = kmalloc(out_len, GFP_NOFS | __GFP_NOWARN);
+
+		err = ubifs_decrypt(dec_buf, dec_len, tmp_buf, &out_len, *(key.u64));
+		if(err) {
+			kfree(tmp_buf);
+			kfree(dec_buf);
+			goto dump;
+		}
+
+		memcpy(addr, tmp_buf, len); /* copy without padding*/
+		kfree(tmp_buf);
+	}
+	else {
+		/* Check size of output */
+		if(dec_len != len) {
+			kfree(dec_buf);
+			goto dump;
+		}
+
+		memcpy(addr, dec_buf, len);
+	}
+	kfree(dec_buf);
 
 	/*
 	 * Data length can be less than a full block, even for blocks that are
@@ -637,6 +672,9 @@ static int populate_page(struct ubifs_info *c, struct page *page,
 			memset(addr, 0, UBIFS_BLOCK_SIZE);
 		} else if (key_block(c, &bu->zbranch[nn].key) == page_block) {
 			struct ubifs_data_node *dn;
+			void *dec_buf;
+			int dec_len;
+			union ubifs_key key;
 
 			dn = bu->buf + (bu->zbranch[nn].offs - offs);
 
@@ -649,10 +687,49 @@ static int populate_page(struct ubifs_info *c, struct page *page,
 
 			dlen = le32_to_cpu(dn->ch.len) - UBIFS_DATA_NODE_SZ;
 			out_len = UBIFS_BLOCK_SIZE;
-			err = ubifs_decompress(&dn->data, dlen, addr, &out_len,
-					       le16_to_cpu(dn->compr_type));
-			if (err || len != out_len)
+
+			dec_buf = kmalloc(out_len, GFP_NOFS | __GFP_NOWARN);
+			if(!dec_buf) {
+				err = -ENOMEM;
 				goto out_err;
+			}
+			dec_len = out_len;
+
+			err = ubifs_decompress(&dn->data, dlen, dec_buf, &dec_len,
+					       le16_to_cpu(dn->compr_type));
+			/*
+			 * Data may be encrypted, so we don't check size here
+			 */
+			if (err)
+				goto out_err;
+
+			if(ubifs_is_crypted(inode)) { /*TODO: add unlikely*/
+				void * tmp_buf;
+
+				data_key_init(c, &key, inode->i_ino, page_block);
+				tmp_buf = kmalloc(out_len, GFP_NOFS | __GFP_NOWARN);
+				ubifs_msg("bulk Decrypting file");
+
+				err = ubifs_decrypt(dec_buf, dec_len, tmp_buf, &out_len, *(key.u64));
+				if(err) {
+					kfree(tmp_buf);
+					kfree(dec_buf);
+					goto out_err;
+				}
+
+				memcpy(addr, tmp_buf, len); /* copy without padding*/
+				kfree(tmp_buf);
+			}
+			else {
+				/* Check size of output */
+				if(dec_len != len) {
+					kfree(dec_buf);
+					goto out_err;
+				}
+
+				memcpy(addr, dec_buf, len);
+			}
+			kfree(dec_buf);
 
 			if (len < UBIFS_BLOCK_SIZE)
 				memset(addr + len, 0, UBIFS_BLOCK_SIZE - len);

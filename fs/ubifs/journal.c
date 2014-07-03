@@ -59,6 +59,7 @@
  */
 
 #include "ubifs.h"
+#include "crypto.h"
 
 /**
  * zero_ino_node_unused - zero out unused fields of an on-flash inode node.
@@ -696,6 +697,8 @@ int ubifs_jnl_write_data(struct ubifs_info *c, const struct inode *inode,
 	int err, lnum, offs, compr_type, out_len;
 	int dlen = COMPRESSED_DATA_NODE_BUF_SZ, allocated = 1;
 	struct ubifs_inode *ui = ubifs_inode(inode);
+	void *enc_buf;
+	int enc_len;
 
 	dbg_jnlk(key, "ino %lu, blk %u, len %d, key ",
 		(unsigned long)key_inum(c, key), key_block(c, key), len);
@@ -727,8 +730,28 @@ int ubifs_jnl_write_data(struct ubifs_info *c, const struct inode *inode,
 		compr_type = ui->compr_type;
 
 	out_len = dlen - UBIFS_DATA_NODE_SZ;
-	ubifs_compress(buf, len, &data->data, &out_len, &compr_type);
+	if(ubifs_is_crypted(inode)) { /*TODO: add unlikely*/
+		enc_len = out_len;
+
+		enc_buf = kmalloc(enc_len, GFP_NOFS | __GFP_NOWARN);
+		if(!enc_buf) {
+			err = -ENOMEM;
+			goto out_free;
+		}
+		err = ubifs_encrypt(buf, len, enc_buf, &enc_len, *(key->u64));
+		if(err) {
+			kfree(enc_buf);
+			goto out_free;
+		}
+	}
+	else {
+		enc_buf = buf;
+		enc_len = len;
+	}
+	ubifs_compress(enc_buf, enc_len, &data->data, &out_len, &compr_type);
 	ubifs_assert(out_len <= UBIFS_BLOCK_SIZE);
+	if(enc_buf != buf)
+		kfree(enc_buf); /* clean tmp buffer */
 
 	dlen = UBIFS_DATA_NODE_SZ + out_len;
 	data->compr_type = cpu_to_le16(compr_type);
@@ -1090,16 +1113,19 @@ out_free:
 
 /**
  * recomp_data_node - re-compress a truncated data node.
+ * @inode: inode for reencryption if need it
  * @dn: data node to re-compress
  * @new_len: new length
  *
  * This function is used when an inode is truncated and the last data node of
  * the inode has to be re-compressed and re-written.
  */
-static int recomp_data_node(struct ubifs_data_node *dn, int *new_len)
+static int recomp_data_node(const struct inode *inode, struct ubifs_data_node *dn, int *new_len)
 {
 	void *buf;
-	int err, len, compr_type, out_len;
+	int err, len, compr_type, out_len, dec_len;
+
+	dbg_gen("recomputing  for trunc ino=%lu size=%d to size=%d", inode->i_ino, le32_to_cpu(dn->size), *new_len);
 
 	out_len = le32_to_cpu(dn->size);
 	buf = kmalloc(out_len * WORST_COMPR_FACTOR, GFP_NOFS);
@@ -1108,11 +1134,42 @@ static int recomp_data_node(struct ubifs_data_node *dn, int *new_len)
 
 	len = le32_to_cpu(dn->ch.len) - UBIFS_DATA_NODE_SZ;
 	compr_type = le16_to_cpu(dn->compr_type);
-	err = ubifs_decompress(&dn->data, len, buf, &out_len, compr_type);
+
+	dec_len = out_len;
+
+	err = ubifs_decompress(&dn->data, len, buf, &dec_len, compr_type);
 	if (err)
 		goto out;
 
-	ubifs_compress(buf, *new_len, &dn->data, &out_len, &compr_type);
+	if(ubifs_is_crypted(inode)) { /*TODO: add unlikely*/
+		void * tmp_buf;
+		union ubifs_key key;
+
+		tmp_buf = kmalloc(out_len * WORST_COMPR_FACTOR, GFP_NOFS | __GFP_NOWARN);
+		if(!tmp_buf) {
+			err = -ENOMEM;
+			goto out;
+		}
+
+		key_read(NULL, &dn->key, &key);
+		/*decrypt*/
+		err = ubifs_decrypt(buf, dec_len, tmp_buf, &out_len, *(key.u64));
+		if(err) {
+			kfree(tmp_buf);
+			goto out;
+		}
+		/* encrypt */
+		err = ubifs_encrypt(tmp_buf, *new_len, buf, &dec_len, *(key.u64));
+		if(err) {
+			kfree(tmp_buf);
+			goto out;
+		}
+
+		kfree(tmp_buf);
+	}
+
+	/*TODO: check size */
+	ubifs_compress(buf, dec_len, &dn->data, &out_len, &compr_type);
 	ubifs_assert(out_len <= UBIFS_BLOCK_SIZE);
 	dn->compr_type = cpu_to_le16(compr_type);
 	dn->size = cpu_to_le32(*new_len);
@@ -1186,8 +1243,9 @@ int ubifs_jnl_truncate(struct ubifs_info *c, const struct inode *inode,
 			else {
 				int compr_type = le16_to_cpu(dn->compr_type);
 
-				if (compr_type != UBIFS_COMPR_NONE) {
-					err = recomp_data_node(dn, &dlen);
+				if (compr_type != UBIFS_COMPR_NONE
+					|| ubifs_is_crypted(inode)) {
+					err = recomp_data_node(inode ,dn, &dlen);
 					if (err)
 						goto out_free;
 				} else {
