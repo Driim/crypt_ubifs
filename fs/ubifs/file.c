@@ -95,7 +95,7 @@ static int read_block(struct inode *inode, void *addr, unsigned int block,
 	if (err)
 		goto dump;
 
-	if(ubifs_is_crypted(inode)) { /*TODO: add unlikely*/
+	if(unlikely(ubifs_is_crypted(inode))) {
 		void * tmp_buf;
 		tmp_buf = kmalloc(out_len, GFP_NOFS | __GFP_NOWARN);
 
@@ -703,7 +703,7 @@ static int populate_page(struct ubifs_info *c, struct page *page,
 			if (err)
 				goto out_err;
 
-			if(ubifs_is_crypted(inode)) { /*TODO: add unlikely*/
+			if(unlikely(ubifs_is_crypted(inode))) {
 				void * tmp_buf;
 
 				data_key_init(c, &key, inode->i_ino, page_block);

@@ -213,7 +213,7 @@ void ubifs_ciphers_exit(void)
 }
 
 
-int ubifs_is_crypted(const struct inode *inode)
+inline int ubifs_is_crypted(const struct inode *inode)
 {
 	const char *name = "user.crypted";
 	char buf = 0;

@@ -730,7 +730,7 @@ int ubifs_jnl_write_data(struct ubifs_info *c, const struct inode *inode,
 		compr_type = ui->compr_type;
 
 	out_len = dlen - UBIFS_DATA_NODE_SZ;
-	if(ubifs_is_crypted(inode)) { /*TODO: add unlikely*/
+	if(unlikely(ubifs_is_crypted(inode))) {
 		enc_len = out_len;
 
 		enc_buf = kmalloc(enc_len, GFP_NOFS | __GFP_NOWARN);
@@ -1141,7 +1141,7 @@ static int recomp_data_node(const struct inode *inode, struct ubifs_data_node *d
 	if (err)
 		goto out;
 
-	if(ubifs_is_crypted(inode)) { /*TODO: add unlikely*/
+	if(unlikely(ubifs_is_crypted(inode))) {
 		void * tmp_buf;
 		union ubifs_key key;
 

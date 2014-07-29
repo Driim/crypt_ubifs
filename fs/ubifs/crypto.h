@@ -51,6 +51,6 @@ int ubifs_encrypt(const void *in_buf, int in_len, void *out_buf, int *out_len,
 	uint64_t tweak);
 int ubifs_decrypt(const void *in_buf, int in_len, void *out_buf, int *out_len,
 	uint64_t tweak);
-int ubifs_is_crypted(const struct inode *inode);
+inline int ubifs_is_crypted(const struct inode *inode);
 
 #endif /* !__UBIFS_CRYPTO_H__ */
