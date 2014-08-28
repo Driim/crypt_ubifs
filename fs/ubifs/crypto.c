@@ -222,7 +222,7 @@ inline int ubifs_is_crypted(const struct inode *inode)
 
 	ret = ubifs_getxattr_ino(inode, name, &buf, buf_size);
 
-	if(buf) {
+	if(unlikely(buf)) {
 		dbg_gen("crypted inode = %lu", inode->i_ino);
 		return 1;
 	}

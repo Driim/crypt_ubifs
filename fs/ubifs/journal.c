@@ -750,7 +750,7 @@ int ubifs_jnl_write_data(struct ubifs_info *c, const struct inode *inode,
 	}
 	ubifs_compress(enc_buf, enc_len, &data->data, &out_len, &compr_type);
 	ubifs_assert(out_len <= UBIFS_BLOCK_SIZE);
-	if(enc_buf != buf)
+	if(unlikely(enc_buf != buf))
 		kfree(enc_buf); /* clean tmp buffer */
 
 	dlen = UBIFS_DATA_NODE_SZ + out_len;
