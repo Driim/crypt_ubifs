@@ -37,6 +37,7 @@
 #include <linux/math64.h>
 #include <linux/writeback.h>
 #include "ubifs.h"
+#include "crypto.h"
 
 /*
  * Maximum amount of memory we may 'kmalloc()' without worrying that we are
@@ -934,6 +935,7 @@ static int check_volume_empty(struct ubifs_info *c)
  * Opt_chk_data_crc: check CRCs when reading data nodes
  * Opt_no_chk_data_crc: do not check CRCs when reading data nodes
  * Opt_override_compr: override default compressor
+ * Opt_crypto_key: set cryptography key
  * Opt_err: just end of array marker
  */
 enum {
@@ -944,6 +946,7 @@ enum {
 	Opt_chk_data_crc,
 	Opt_no_chk_data_crc,
 	Opt_override_compr,
+	Opt_crypto_key,
 	Opt_err,
 };
 
@@ -955,6 +958,7 @@ static const match_table_t tokens = {
 	{Opt_chk_data_crc, "chk_data_crc"},
 	{Opt_no_chk_data_crc, "no_chk_data_crc"},
 	{Opt_override_compr, "compr=%s"},
+	{Opt_crypto_key, "key=%s"},
 	{Opt_err, NULL},
 };
 
@@ -1052,6 +1056,21 @@ static int ubifs_parse_options(struct ubifs_info *c, char *options,
 			kfree(name);
 			c->mount_opts.override_compr = 1;
 			c->default_compr = c->mount_opts.compr_type;
+			break;
+		}
+		case Opt_crypto_key:
+		{
+			char *key = match_strdup(&args[0]);
+
+			if (!key)
+				return -ENOMEM;
+
+			if(ubifs_set_crypto_key(key, strlen(key))) {
+				kfree(key);
+				return -EINVAL;
+			}
+
+			kfree(key);
 			break;
 		}
 		default:
@@ -2260,9 +2279,13 @@ static int __init ubifs_init(void)
 
 	register_shrinker(&ubifs_shrinker_info);
 
+	err = ubifs_ciphers_init();
+	if(err)
+		goto out_shrinker;
+
 	err = ubifs_compressors_init();
 	if (err)
-		goto out_shrinker;
+		goto out_cipher;
 
 	err = dbg_debugfs_init();
 	if (err)
@@ -2279,6 +2302,8 @@ out_dbg:
 	dbg_debugfs_exit();
 out_compr:
 	ubifs_compressors_exit();
+out_cipher:
+	ubifs_ciphers_exit();
 out_shrinker:
 	unregister_shrinker(&ubifs_shrinker_info);
 	kmem_cache_destroy(ubifs_inode_slab);
@@ -2293,6 +2318,7 @@ static void __exit ubifs_exit(void)
 	ubifs_assert(atomic_long_read(&ubifs_clean_zn_cnt) == 0);
 
 	dbg_debugfs_exit();
+	ubifs_ciphers_exit();
 	ubifs_compressors_exit();
 	unregister_shrinker(&ubifs_shrinker_info);
 

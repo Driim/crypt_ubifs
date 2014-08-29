@@ -568,3 +568,63 @@ out_free:
 	kfree(xent);
 	return err;
 }
+
+ssize_t ubifs_getxattr_ino(const struct inode *host, const char *name, void *buf,
+		       size_t size)
+{
+	struct inode *inode;
+	struct ubifs_info *c = host->i_sb->s_fs_info;
+	struct qstr nm = QSTR_INIT(name, strlen(name));
+	struct ubifs_inode *ui;
+	struct ubifs_dent_node *xent;
+	union ubifs_key key;
+	int err;
+
+	dbg_gen("xattr_ino '%s', ino %lu, buf size %zd", name,
+		host->i_ino, size);
+
+	err = check_namespace(&nm);
+	if (err < 0)
+		return err;
+
+	xent = kmalloc(UBIFS_MAX_XENT_NODE_SZ, GFP_NOFS);
+	if (!xent)
+		return -ENOMEM;
+
+	xent_key_init(c, &key, host->i_ino, &nm);
+	err = ubifs_tnc_lookup_nm(c, &key, xent, &nm);
+	if (err) {
+		if (err == -ENOENT)
+			err = -ENODATA;
+		goto out_unlock;
+	}
+
+	inode = iget_xattr(c, le64_to_cpu(xent->inum));
+	if (IS_ERR(inode)) {
+		err = PTR_ERR(inode);
+		goto out_unlock;
+	}
+
+	ui = ubifs_inode(inode);
+	ubifs_assert(inode->i_size == ui->data_len);
+	ubifs_assert(ubifs_inode(host)->xattr_size > ui->data_len);
+
+	if (buf) {
+		/* If @buf is %NULL we are supposed to return the length */
+		if (ui->data_len > size) {
+			ubifs_err("buffer size %zd, xattr len %d",
+				  size, ui->data_len);
+			err = -ERANGE;
+			goto out_iput;
+		}
+
+		memcpy(buf, ui->data, ui->data_len);
+	}
+	err = ui->data_len;
+
+out_iput:
+	iput(inode);
+out_unlock:
+	kfree(xent);
+	return err;
+}
