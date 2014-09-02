@@ -50,6 +50,7 @@
  */
 
 #include "ubifs.h"
+#include "crypto.h"
 #include <linux/aio.h>
 #include <linux/mount.h>
 #include <linux/namei.h>
@@ -80,10 +81,54 @@ static int read_block(struct inode *inode, void *addr, unsigned int block,
 
 	dlen = le32_to_cpu(dn->ch.len) - UBIFS_DATA_NODE_SZ;
 	out_len = UBIFS_BLOCK_SIZE;
-	err = ubifs_decompress(&dn->data, dlen, addr, &out_len,
+
+	if(unlikely(ubifs_is_crypted(inode))) {
+		void *dec_buf;
+		void *tmp_buf;
+		int dec_len;
+
+		dbg_gen("inode is crypted = %lu, block %u", inode->i_ino, block);
+		tmp_buf = kmalloc(out_len, GFP_NOFS);
+		dec_buf = kmalloc(out_len, GFP_NOFS);
+		if(!dec_buf) {
+			/* TODO: add error messages */
+			goto dump;
+		}
+
+		ubifs_dump_inode(c, inode);
+		//dbg_gen("1Data before decryption and decompression");
+		//ubifs_dump_node(c, dn);
+
+		err = ubifs_decompress(&dn->data, dlen, dec_buf, &dec_len,
 			       le16_to_cpu(dn->compr_type));
-	if (err || len != out_len)
-		goto dump;
+		if (err || len != dec_len)
+			goto dump;
+
+		dbg_gen("Data after decompression");
+		print_hex_dump(KERN_ERR, "\t", DUMP_PREFIX_OFFSET, 32, 1,
+			       dec_buf, 100, 0);
+
+		err = ubifs_decrypt(dec_buf, dec_len, addr, &out_len, *(key.u64));
+		if(err) {
+			/* TODO: add error messages */
+			kfree(dec_buf);
+			goto dump;
+		}
+
+		dbg_gen("Data after decryption and decompression");
+		print_hex_dump(KERN_ERR, "\t", DUMP_PREFIX_OFFSET, 32, 1,
+			       addr, 100, 0);
+
+		//memcpy(addr, tmp_buf, len);
+		kfree(dec_buf);
+		kfree(tmp_buf);
+	} else {
+		dbg_gen("plain inode = %lu, block %u", inode->i_ino, block);
+		err = ubifs_decompress(&dn->data, dlen, addr, &out_len,
+			       le16_to_cpu(dn->compr_type));
+		if (err || len != out_len)
+			goto dump;
+	}
 
 	/*
 	 * Data length can be less than a full block, even for blocks that are
@@ -649,10 +694,37 @@ static int populate_page(struct ubifs_info *c, struct page *page,
 
 			dlen = le32_to_cpu(dn->ch.len) - UBIFS_DATA_NODE_SZ;
 			out_len = UBIFS_BLOCK_SIZE;
-			err = ubifs_decompress(&dn->data, dlen, addr, &out_len,
+
+			if(unlikely(ubifs_is_crypted(inode))) {
+				void * tmp_buf;
+				int tmp_len;
+				union ubifs_key key;
+
+				dbg_gen("inode is crypted = %lu, block %u", inode->i_ino, page_block);
+
+				data_key_init(c, &key, inode->i_ino, page_block);
+				tmp_buf = kmalloc(out_len, GFP_NOFS);
+				if(!tmp_buf) {
+					goto out_err;
+				}
+
+				err = ubifs_decrypt(&dn->data, dlen, tmp_buf, &tmp_len, *(key.u64));
+				if(err) {
+					kfree(tmp_buf);
+					goto out_err;
+				}
+
+				err = ubifs_decompress(tmp_buf, tmp_len, addr, &out_len,
 					       le16_to_cpu(dn->compr_type));
-			if (err || len != out_len)
-				goto out_err;
+				if (err || len != out_len)
+					goto out_err;	
+			} else {
+				dbg_gen("inode is plain = %lu, block %u", inode->i_ino, page_block);
+				err = ubifs_decompress(&dn->data, dlen, addr, &out_len,
+					       le16_to_cpu(dn->compr_type));
+				if (err || len != out_len)
+					goto out_err;
+			}
 
 			if (len < UBIFS_BLOCK_SIZE)
 				memset(addr + len, 0, UBIFS_BLOCK_SIZE - len);

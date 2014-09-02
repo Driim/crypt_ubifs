@@ -580,7 +580,7 @@ ssize_t ubifs_getxattr_ino(const struct inode *host, const char *name, void *buf
 	union ubifs_key key;
 	int err;
 
-	dbg_gen("xattr_ino '%s', ino %lu, buf size %zd", name,
+	dbg_gen("is crypted xattr_ino '%s', ino %lu, buf size %zd", name,
 		host->i_ino, size);
 
 	err = check_namespace(&nm);

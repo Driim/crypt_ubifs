@@ -60,8 +60,8 @@ static void initializeTweakBytes(uint8_t *tweakBytes, uint64_t tweak) {
 static int ubifs_crypt(const void *in_buf, int in_len, void *out_buf, int *out_len,
 	uint64_t tweak, int op)
 {
-	struct scatterlist in_sg;
-	struct scatterlist out_sg;
+	struct scatterlist sg[2];
+
 	uint8_t tweakBytes[AES_BLOCK_SIZE];
 	int ret;
 
@@ -70,23 +70,40 @@ static int ubifs_crypt(const void *in_buf, int in_len, void *out_buf, int *out_l
 		return EINVAL; /*TODO: error code*/
 	}
 
-	sg_init_one(&in_sg, in_buf, in_len);
-	sg_init_one(&out_sg, out_buf, *out_len);
+	sg_init_one(&sg[0], in_buf, in_len);
+	sg_init_one(&sg[1], out_buf, *out_len);
 
 	initializeTweakBytes(tweakBytes, tweak);
 
 	cipher.desc->info = tweakBytes;
 
+	dbg_gen("ubifs before encryption:");
+	print_hex_dump(KERN_ERR, "\t", DUMP_PREFIX_OFFSET, 32, 1,
+			       tweakBytes, AES_BLOCK_SIZE, 0);
+	print_hex_dump(KERN_ERR, "\t", DUMP_PREFIX_OFFSET, 32, 1,
+			       in_buf, 100, 0);
+
 	if (op)
-		ret = crypto_blkcipher_encrypt_iv(cipher.desc, &out_sg, &in_sg, in_len);
+		ret = crypto_blkcipher_encrypt_iv(cipher.desc, &sg[1], &sg[0], in_len);
 	else
-		ret = crypto_blkcipher_decrypt_iv(cipher.desc, &out_sg, &in_sg, in_len);
+		ret = crypto_blkcipher_decrypt_iv(cipher.desc, &sg[1], &sg[0], in_len);
 
 	if(ret) {
 		/* TODO: Need more info */
 		ubifs_err("Failed to en/decrypt data");
 		return EINVAL; /*TODO: error code*/
 	}
+
+	dbg_gen("ubifs after encryption out:");
+	print_hex_dump(KERN_ERR, "\t", DUMP_PREFIX_OFFSET, 32, 1,
+			       tweakBytes, AES_BLOCK_SIZE, 0);
+	print_hex_dump(KERN_ERR, "\t", DUMP_PREFIX_OFFSET, 32, 1,
+			       out_buf, 100, 0);
+	dbg_gen("ubifs after encryption in:");
+	print_hex_dump(KERN_ERR, "\t", DUMP_PREFIX_OFFSET, 32, 1,
+			       tweakBytes, AES_BLOCK_SIZE, 0);
+	print_hex_dump(KERN_ERR, "\t", DUMP_PREFIX_OFFSET, 32, 1,
+			       in_buf, 100, 0);
 
 	return 0;
 }
@@ -146,13 +163,13 @@ int ubifs_encrypt(const void *in_buf, int in_len, void *out_buf, int *out_len,
 
 	*out_len = in_len_aligned;
 
+	dbg_gen("encryption of data chunk size=%d, buffer size=%d, tweak %llu", in_len, *out_len, tweak);
+
 	ret = ubifs_crypt(in_buf_aligned, in_len_aligned,
 		out_buf, out_len, tweak, 1);
 	if(ret) {
 		return ret;
 	}
-
-	dbg_gen("encryption of data chunk size=%d, buffer size=%d", in_len, *out_len);
 
 	if(in_buf_aligned != in_buf && in_buf_aligned != NULL) {
 		kfree(in_buf_aligned);
@@ -167,8 +184,6 @@ int ubifs_decrypt(const void *in_buf, int in_len, void *out_buf, int *out_len,
 	int in_len_aligned;
 	int ret;
 
-	dbg_gen("decryption of data chunk size=%d, buffer size=%d", in_len, *out_len);
-
 	in_len_aligned = ALIGN(in_len, AES_BLOCK_SIZE);
 	if(in_len_aligned != in_len) {
 		/* unaligned decryption cannot be done */
@@ -178,8 +193,9 @@ int ubifs_decrypt(const void *in_buf, int in_len, void *out_buf, int *out_len,
 
 	*out_len = in_len;
 
-	ret = ubifs_crypt(in_buf, in_len,
-		out_buf, out_len, tweak, 0);
+	dbg_gen("decryption of data chunk size=%d, buffer size=%d, tweak %llu", in_len, *out_len, tweak);
+
+	ret = ubifs_crypt(in_buf, in_len, out_buf, out_len, tweak, 0);
 	if(ret) {
 		return ret;/*TODO: error code*/
 	}
@@ -216,9 +232,13 @@ void ubifs_ciphers_exit(void)
 inline int ubifs_is_crypted(const struct inode *inode)
 {
 	const char *name = "user.crypted";
+	struct ubifs_inode *ui = ubifs_inode(inode);
 	char buf = 0;
 	size_t buf_size = 1;
 	ssize_t ret;
+
+	if(ui->xattr_cnt == 0)
+		return 0;
 
 	ret = ubifs_getxattr_ino(inode, name, &buf, buf_size);
 
