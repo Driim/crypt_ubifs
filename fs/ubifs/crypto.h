@@ -40,6 +40,7 @@ struct ubifs_cipher {
 	int cipher_type;
 	int key_flag;
 	struct blkcipher_desc *desc;
+	struct mutex *ciph_mutex;
 	const char *name;
 	const char *capi_name;
 };
@@ -49,7 +50,7 @@ void ubifs_ciphers_exit(void);
 int ubifs_set_crypto_key(uint8_t * key_buf, int len);
 int ubifs_encrypt(const void *in_buf, int in_len, void *out_buf, int *out_len,
 	uint64_t tweak);
-int ubifs_decrypt(const void *in_buf, int in_len, void *out_buf, int *out_len,
+int ubifs_decrypt(const void *in_buf, int in_len, void *out_buf, int data_len,
 	uint64_t tweak);
 inline int ubifs_is_crypted(const struct inode *inode);
 

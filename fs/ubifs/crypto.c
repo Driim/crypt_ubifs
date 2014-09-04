@@ -29,6 +29,8 @@
 #include <linux/err.h>
 #include <linux/scatterlist.h>
 
+static DEFINE_MUTEX(cipher_mutex);
+
 static struct blkcipher_desc crypto_desc;
 
 static struct ubifs_cipher cipher = {
@@ -36,8 +38,8 @@ static struct ubifs_cipher cipher = {
 	.name = "aes",
 	.capi_name = "xts(aes)",
 	.desc = &crypto_desc,
+	.ciph_mutex = &cipher_mutex,
 };
-
 
 static void initializeTweakBytes(uint8_t *tweakBytes, uint64_t tweak) {
 	int j;
@@ -56,6 +58,8 @@ static void initializeTweakBytes(uint8_t *tweakBytes, uint64_t tweak) {
  * @out_len: output buffer length is returned here
  * @tweak: tweak for aes-xts en/decryption
  * @op: operation encrypt - 1, decrypt - 0
+ *
+ * Note: in_buf must be aligned to cipher block
  **/
 static int ubifs_crypt(const void *in_buf, int in_len, void *out_buf, int *out_len,
 	uint64_t tweak, int op)
@@ -75,35 +79,18 @@ static int ubifs_crypt(const void *in_buf, int in_len, void *out_buf, int *out_l
 
 	initializeTweakBytes(tweakBytes, tweak);
 
-	cipher.desc->info = tweakBytes;
-
-	dbg_gen("ubifs before encryption:");
-	print_hex_dump(KERN_ERR, "\t", DUMP_PREFIX_OFFSET, 32, 1,
-			       tweakBytes, AES_BLOCK_SIZE, 0);
-	print_hex_dump(KERN_ERR, "\t", DUMP_PREFIX_OFFSET, 32, 1,
-			       in_buf, 100, 0);
+	crypto_blkcipher_set_iv(cipher.desc->tfm, tweakBytes, AES_BLOCK_SIZE);
 
 	if (op)
-		ret = crypto_blkcipher_encrypt_iv(cipher.desc, &sg[1], &sg[0], in_len);
+		ret = crypto_blkcipher_encrypt(cipher.desc, &sg[1], &sg[0], in_len);
 	else
-		ret = crypto_blkcipher_decrypt_iv(cipher.desc, &sg[1], &sg[0], in_len);
+		ret = crypto_blkcipher_decrypt(cipher.desc, &sg[1], &sg[0], in_len);
 
 	if(ret) {
 		/* TODO: Need more info */
 		ubifs_err("Failed to en/decrypt data");
 		return EINVAL; /*TODO: error code*/
 	}
-
-	dbg_gen("ubifs after encryption out:");
-	print_hex_dump(KERN_ERR, "\t", DUMP_PREFIX_OFFSET, 32, 1,
-			       tweakBytes, AES_BLOCK_SIZE, 0);
-	print_hex_dump(KERN_ERR, "\t", DUMP_PREFIX_OFFSET, 32, 1,
-			       out_buf, 100, 0);
-	dbg_gen("ubifs after encryption in:");
-	print_hex_dump(KERN_ERR, "\t", DUMP_PREFIX_OFFSET, 32, 1,
-			       tweakBytes, AES_BLOCK_SIZE, 0);
-	print_hex_dump(KERN_ERR, "\t", DUMP_PREFIX_OFFSET, 32, 1,
-			       in_buf, 100, 0);
 
 	return 0;
 }
@@ -137,6 +124,15 @@ int ubifs_set_crypto_key(uint8_t * key_buf, int len)
 	return 0;
 }
 
+/**
+ * ubifs_encrypt - Encrypt data
+ * @in_buf: input buffer
+ * @in_len: length of input buffer
+ * @out_buf: output buffer
+ * @out_len: store size of data after encryption
+ * @tweak: tweak value
+ *
+ **/
 int ubifs_encrypt(const void *in_buf, int in_len, void *out_buf, int *out_len,
 	uint64_t tweak)
 {
@@ -144,61 +140,84 @@ int ubifs_encrypt(const void *in_buf, int in_len, void *out_buf, int *out_len,
 	void *in_buf_aligned = NULL;
 	int ret;
 
-	/*check aligning*/
+	/*
+	 *	FIXME:cryptoapi(scatterlist) works with error if we use in_buf
+	 *        that come from ubifs_writepage, so buffer for encryption
+	 *        we create here and do aligning if need it
+	 */
 	in_len_aligned = ALIGN(in_len, AES_BLOCK_SIZE);
-	if(in_len_aligned != in_len) {
-		in_buf_aligned = kmalloc(in_len_aligned, GFP_NOFS);
-
-		if(!in_buf_aligned) {
-			ubifs_err("No memory for cryptobuffer!");
-			return -ENOMEM;/*TODO: no memory retval */
-		}
-
-		/* Clean buffer not necessarily, just copy data */
-		memcpy(in_buf_aligned, in_buf, in_len);
+	in_buf_aligned = kmalloc(in_len_aligned, GFP_NOFS);
+	if(!in_buf_aligned) {
+		ubifs_err("No memory");
+		return -ENOMEM;
 	}
-	else {
-		in_buf_aligned = (void *)in_buf;
-	}
+	memcpy(in_buf_aligned, in_buf, in_len);
 
 	*out_len = in_len_aligned;
 
-	dbg_gen("encryption of data chunk size=%d, buffer size=%d, tweak %llu", in_len, *out_len, tweak);
+	mutex_lock(cipher.ciph_mutex);
 
 	ret = ubifs_crypt(in_buf_aligned, in_len_aligned,
-		out_buf, out_len, tweak, 1);
+									out_buf, out_len, tweak, 1);
+	mutex_unlock(cipher.ciph_mutex); /* TODO: mutex may be not need here */
 	if(ret) {
+		ubifs_err("encryption error");
 		return ret;
 	}
 
-	if(in_buf_aligned != in_buf && in_buf_aligned != NULL) {
-		kfree(in_buf_aligned);
-	}
+	mutex_unlock(cipher.ciph_mutex);
+	kfree(in_buf_aligned);
 
 	return 0;
 }
 
-int ubifs_decrypt(const void *in_buf, int in_len, void *out_buf, int *out_len,
+/**
+ * ubifs_decrypt - Encrypt data
+ * @in_buf: input buffer
+ * @in_len: length of input buffer
+ * @out_buf: output buffer
+ * @data_len: store size of data after encryption
+ * @tweak: tweak value
+ *
+ **/
+int ubifs_decrypt(const void *in_buf, int in_len, void *out_buf, int data_len,
 	uint64_t tweak)
 {
-	int in_len_aligned;
+	int in_len_aligned, tmp_len;
 	int ret;
+	void * out_buf_tmp = NULL;
 
 	in_len_aligned = ALIGN(in_len, AES_BLOCK_SIZE);
 	if(in_len_aligned != in_len) {
 		/* unaligned decryption cannot be done */
 		ubifs_err("Cannot decrypt unaligned data");
-		return EINVAL;/*TODO: error code*/
+		return -EINVAL;
 	}
 
-	*out_len = in_len;
+	/*
+	 *	FIXME: cryptoapi(scatterlist) works with error if we use in_buf
+	 *         that come from ubifs_writepage, so buffer for encryption
+	 *         we create here and do aligning if need it
+	 */
+	out_buf_tmp = kmalloc(in_len, GFP_NOFS);
+	if(!out_buf_tmp) {
+		ubifs_err("No memory");
+		return -ENOMEM;
+	}
 
-	dbg_gen("decryption of data chunk size=%d, buffer size=%d, tweak %llu", in_len, *out_len, tweak);
+	mutex_lock(cipher.ciph_mutex);
 
-	ret = ubifs_crypt(in_buf, in_len, out_buf, out_len, tweak, 0);
+	ret = ubifs_crypt(in_buf, in_len, out_buf_tmp, &tmp_len, tweak, 0);
 	if(ret) {
-		return ret;/*TODO: error code*/
+		ubifs_err("decryption error");
+		mutex_unlock(cipher.ciph_mutex);
+		return ret;
 	}
+
+	mutex_unlock(cipher.ciph_mutex);
+
+	memcpy(out_buf, out_buf_tmp, data_len); /*the real(unaligned) size stored in data_len*/
+	kfree(out_buf_tmp);
 
 	return 0;
 }

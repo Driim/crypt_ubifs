@@ -84,16 +84,15 @@ static int read_block(struct inode *inode, void *addr, unsigned int block,
 
 	if(unlikely(ubifs_is_crypted(inode))) {
 		void *dec_buf;
-		void *tmp_buf;
 		int dec_len;
 
 		dbg_gen("inode is crypted = %lu, block %u", inode->i_ino, block);
-		tmp_buf = kmalloc(out_len, GFP_NOFS);
 		dec_buf = kmalloc(out_len, GFP_NOFS);
 		if(!dec_buf) {
 			/* TODO: add error messages */
 			goto dump;
 		}
+		memset(dec_buf, 0, out_len);
 
 		ubifs_dump_inode(c, inode);
 		//dbg_gen("1Data before decryption and decompression");
@@ -101,16 +100,13 @@ static int read_block(struct inode *inode, void *addr, unsigned int block,
 
 		err = ubifs_decompress(&dn->data, dlen, dec_buf, &dec_len,
 			       le16_to_cpu(dn->compr_type));
-		if (err || len != dec_len)
+		if (err) /* Do not check size because data may be aligned */
 			goto dump;
 
-		dbg_gen("Data after decompression");
-		print_hex_dump(KERN_ERR, "\t", DUMP_PREFIX_OFFSET, 32, 1,
-			       dec_buf, 100, 0);
-
-		err = ubifs_decrypt(dec_buf, dec_len, addr, &out_len, *(key.u64));
+		err = ubifs_decrypt(dec_buf, dec_len, addr, len, key.u64[0]);
 		if(err) {
 			/* TODO: add error messages */
+			ubifs_err("Failed to decrypt");
 			kfree(dec_buf);
 			goto dump;
 		}
@@ -121,7 +117,6 @@ static int read_block(struct inode *inode, void *addr, unsigned int block,
 
 		//memcpy(addr, tmp_buf, len);
 		kfree(dec_buf);
-		kfree(tmp_buf);
 	} else {
 		dbg_gen("plain inode = %lu, block %u", inode->i_ino, block);
 		err = ubifs_decompress(&dn->data, dlen, addr, &out_len,
@@ -697,7 +692,6 @@ static int populate_page(struct ubifs_info *c, struct page *page,
 
 			if(unlikely(ubifs_is_crypted(inode))) {
 				void * tmp_buf;
-				int tmp_len;
 				union ubifs_key key;
 
 				dbg_gen("inode is crypted = %lu, block %u", inode->i_ino, page_block);
@@ -708,16 +702,18 @@ static int populate_page(struct ubifs_info *c, struct page *page,
 					goto out_err;
 				}
 
-				err = ubifs_decrypt(&dn->data, dlen, tmp_buf, &tmp_len, *(key.u64));
+				err = ubifs_decompress(&dn->data, dlen, tmp_buf, &out_len,
+					       le16_to_cpu(dn->compr_type));
+				if (err)
+					goto out_err;
+
+				err = ubifs_decrypt(tmp_buf, out_len, addr, len, key.u64[0]);
 				if(err) {
 					kfree(tmp_buf);
 					goto out_err;
 				}
 
-				err = ubifs_decompress(tmp_buf, tmp_len, addr, &out_len,
-					       le16_to_cpu(dn->compr_type));
-				if (err || len != out_len)
-					goto out_err;	
+				kfree(tmp_buf);
 			} else {
 				dbg_gen("inode is plain = %lu, block %u", inode->i_ino, page_block);
 				err = ubifs_decompress(&dn->data, dlen, addr, &out_len,

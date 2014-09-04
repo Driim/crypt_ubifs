@@ -740,20 +740,11 @@ int ubifs_jnl_write_data(struct ubifs_info *c, const struct inode *inode,
 			goto out_free;
 		}
 
-		ubifs_dump_inode(c, inode);
-		dbg_gen("1Data before encryption and compression");
-		print_hex_dump(KERN_ERR, "\t", DUMP_PREFIX_OFFSET, 32, 1,
-			       buf, 100, 0);
-
-		err = ubifs_encrypt(buf, len, enc_buf, &enc_len, *(key->u64));
+		err = ubifs_encrypt(buf, len, enc_buf, &enc_len, key->u64[0]);
 		if(err) {
 			err = -EINVAL;
 			goto out_free;
 		}
-
-		dbg_gen("Data after encryption before compression");
-		print_hex_dump(KERN_ERR, "\t", DUMP_PREFIX_OFFSET, 32, 1,
-			       enc_buf, 100, 0);
 
 		ubifs_compress(enc_buf, enc_len, &data->data, &out_len, &compr_type);
 
@@ -1168,14 +1159,14 @@ static int recomp_data_node(const struct inode *inode, struct ubifs_data_node *d
 
 		key_read(NULL, &dn->key, &key);
 
-		/* decrypt */
-		err = ubifs_decrypt(buf, out_len, tmp_buf, &dec_len, *(key.u64));
+		/* decrypt, data size fit to new size */
+		err = ubifs_decrypt(buf, out_len, tmp_buf, *new_len, key.u64[0]);
 		if(err) {
 			kfree(tmp_buf);
 			goto out;
 		}
 		/* encrypt with new size */
-		err = ubifs_encrypt(tmp_buf, *new_len, buf, &dec_len, *(key.u64));
+		err = ubifs_encrypt(tmp_buf, *new_len, buf, &dec_len, key.u64[0]);
 		if(err) {
 			kfree(tmp_buf);
 			goto out;
