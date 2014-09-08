@@ -56,6 +56,7 @@
  */
 
 #include "ubifs.h"
+#include "crypto.h"
 #include <linux/fs.h>
 #include <linux/slab.h>
 #include <linux/xattr.h>
@@ -161,6 +162,7 @@ static int create_xattr(struct ubifs_info *c, struct inode *host,
 	ubifs_release_budget(c, &req);
 	insert_inode_hash(inode);
 	iput(inode);
+
 	return 0;
 
 out_cancel:
@@ -317,6 +319,15 @@ int ubifs_setxattr(struct dentry *dentry, const char *name,
 	xent = kmalloc(UBIFS_MAX_XENT_NODE_SZ, GFP_NOFS);
 	if (!xent)
 		return -ENOMEM;
+
+	/*******
+	 * Check, if xattr name == crypted, then mark host_ui
+	 *******/
+	dbg_gen("xattr %s, size of %d, flag %s and len %d", name, strlen(name), XATTR_CRYPT_FLAG, strlen(XATTR_CRYPT_FLAG));
+	if(!strncmp(name, XATTR_CRYPT_FLAG, strlen(XATTR_CRYPT_FLAG))) {
+		ubifs_inode(host)->crypted = 1;
+		dbg_gen("inode %lu marked as crypted", host->i_ino);
+	}
 
 	/*
 	 * The extended attribute entries are stored in LNC, so multiple

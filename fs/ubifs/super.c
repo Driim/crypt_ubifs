@@ -153,6 +153,11 @@ struct inode *ubifs_iget(struct super_block *sb, unsigned long inum)
 
 	ui->xattr = (ui->flags & UBIFS_XATTR_FL) ? 1 : 0;
 
+	if(!ui->xattr) {
+		/* mark inode if crypted */
+		ui->crypted = ubifs_is_inode_crypted(inode);
+	}
+
 	err = validate_inode(c, inode);
 	if (err)
 		goto out_invalid;

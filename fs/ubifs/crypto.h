@@ -28,6 +28,8 @@
 #define AES_BLOCK_SIZE 16
 #define AES_KEY_SIZE   32
 
+#define XATTR_CRYPT_FLAG ("user.crypted")
+
 /**
  * struct ubifs_cipher - UBIFS cipher description structure.
  * @cipher_type: cipher type (%UBIFS_CIPHER_AES_XTS, etc)
@@ -53,5 +55,6 @@ int ubifs_encrypt(const void *in_buf, int in_len, void *out_buf, int *out_len,
 int ubifs_decrypt(const void *in_buf, int in_len, void *out_buf, int data_len,
 	uint64_t tweak);
 inline int ubifs_is_crypted(const struct inode *inode);
+int ubifs_is_inode_crypted(const struct inode *inode);
 
 #endif /* !__UBIFS_CRYPTO_H__ */

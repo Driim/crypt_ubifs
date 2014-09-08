@@ -92,11 +92,6 @@ static int read_block(struct inode *inode, void *addr, unsigned int block,
 			/* TODO: add error messages */
 			goto dump;
 		}
-		memset(dec_buf, 0, out_len);
-
-		ubifs_dump_inode(c, inode);
-		//dbg_gen("1Data before decryption and decompression");
-		//ubifs_dump_node(c, dn);
 
 		err = ubifs_decompress(&dn->data, dlen, dec_buf, &dec_len,
 			       le16_to_cpu(dn->compr_type));
@@ -111,11 +106,6 @@ static int read_block(struct inode *inode, void *addr, unsigned int block,
 			goto dump;
 		}
 
-		dbg_gen("Data after decryption and decompression");
-		print_hex_dump(KERN_ERR, "\t", DUMP_PREFIX_OFFSET, 32, 1,
-			       addr, 100, 0);
-
-		//memcpy(addr, tmp_buf, len);
 		kfree(dec_buf);
 	} else {
 		dbg_gen("plain inode = %lu, block %u", inode->i_ino, block);
