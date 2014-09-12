@@ -41,6 +41,7 @@
 struct ubifs_cipher {
 	int cipher_type;
 	int key_flag;
+	int init_flag;
 	struct blkcipher_desc *desc;
 	struct mutex *ciph_mutex;
 	const char *name;

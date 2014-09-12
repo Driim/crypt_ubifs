@@ -36,6 +36,7 @@ static struct blkcipher_desc crypto_desc;
 static struct ubifs_cipher cipher = {
 	.key_flag = 0,
 	.name = "aes",
+	.init_flag = 0,
 	.capi_name = "xts(aes)",
 	.desc = &crypto_desc,
 	.ciph_mutex = &cipher_mutex,
@@ -89,7 +90,7 @@ static int ubifs_crypt(const void *in_buf, int in_len, void *out_buf, int *out_l
 	if(ret) {
 		/* TODO: Need more info */
 		ubifs_err("Failed to en/decrypt data");
-		return EINVAL; /*TODO: error code*/
+		return -EINVAL; /*TODO: error code*/
 	}
 
 	return 0;
@@ -104,6 +105,9 @@ static int ubifs_crypt(const void *in_buf, int in_len, void *out_buf, int *out_l
  **/
 int ubifs_set_crypto_key(uint8_t * key_buf, int len)
 {
+	if(!cipher.init_flag)
+		return -EINVAL;
+
 	if(len != AES_KEY_SIZE) {
 		/* TODO: in case of error set default cipher to none */
 		ubifs_err("Bad key size for %s", cipher.name);
@@ -116,7 +120,7 @@ int ubifs_set_crypto_key(uint8_t * key_buf, int len)
 	if(crypto_blkcipher_setkey(cipher.desc->tfm, key_buf, len)) {
 		ubifs_err("cannot set %s key flags=%x",
 			cipher.name, crypto_blkcipher_get_flags(cipher.desc->tfm));
-		return EINVAL;/*TODO: error code*/
+		return -EINVAL;/*TODO: error code*/
 	}
 
 	cipher.key_flag = 1;
@@ -139,6 +143,9 @@ int ubifs_encrypt(const void *in_buf, int in_len, void *out_buf, int *out_len,
 	int in_len_aligned;
 	void *in_buf_aligned = NULL;
 	int ret;
+
+	if(!cipher.init_flag)
+		return -EINVAL;
 
 	/*
 	 *	FIXME:cryptoapi(scatterlist) works with error if we use in_buf
@@ -187,6 +194,9 @@ int ubifs_decrypt(const void *in_buf, int in_len, void *out_buf, int data_len,
 	int ret;
 	void * out_buf_tmp = NULL;
 
+	if(!cipher.init_flag)
+		return -EINVAL;
+
 	in_len_aligned = ALIGN(in_len, AES_BLOCK_SIZE);
 	if(in_len_aligned != in_len) {
 		/* unaligned decryption cannot be done */
@@ -230,11 +240,11 @@ int __init ubifs_ciphers_init(void)
 {
 	cipher.desc->tfm = crypto_alloc_blkcipher(cipher.capi_name, 0, 0);
 	if (IS_ERR(cipher.desc->tfm)) {
-		ubifs_err("cannot initialize cipher %s, error %ld",
-			cipher.name, PTR_ERR(cipher.desc->tfm));
-		return PTR_ERR(cipher.desc->tfm);
+		/* UBIFS can normally work without cipher */
+		return 0;
 	}
 
+	cipher.init_flag = 1;
 	cipher.desc->flags = 0;
 	return 0;
 }
@@ -244,7 +254,8 @@ int __init ubifs_ciphers_init(void)
  **/
 void ubifs_ciphers_exit(void)
 {
-	crypto_free_blkcipher(cipher.desc->tfm);
+	if(cipher.init_flag)
+		crypto_free_blkcipher(cipher.desc->tfm);
 }
 
 
@@ -261,7 +272,7 @@ int ubifs_is_inode_crypted(const struct inode *inode)
 	size_t buf_size = 1;
 	ssize_t ret;
 
-	if(ui->xattr_cnt == 0)
+	if(!cipher.init_flag || ui->xattr_cnt == 0)
 		return 0;
 
 	ret = ubifs_getxattr_ino(inode, name, &buf, buf_size);
